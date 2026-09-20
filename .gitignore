@@ -1,0 +1,14 @@
+/app
+/node_modules
+/vendor
+.env
+*.log
+.DS_Store
+
+/worker/node_modules
+/worker/.wrangler
+/worker/dist
+
+/module/flareweber/node_modules
+
+/build

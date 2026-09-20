@@ -1,0 +1,26 @@
+{
+  "name": "flareweber-site",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-09-01",
+  "assets": {
+    "directory": "./assets",
+    "binding": "ASSETS"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "flareweber-site-db",
+      "database_id": "local-dev"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "MEDIA",
+      "bucket_name": "flareweber-site-media"
+    }
+  ],
+  "vars": {
+    "SITE_ID": "local",
+    "SITE_DOMAIN": ""
+  }
+}

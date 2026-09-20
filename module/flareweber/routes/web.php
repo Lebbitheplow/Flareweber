@@ -1,11 +1,14 @@
 <?php
 
+use FlareWeber\Http\Controllers\AdminController;
 use FlareWeber\Http\Controllers\CloudflareOAuthController;
 use FlareWeber\Http\Controllers\DomainController;
 use FlareWeber\Http\Controllers\PublishController;
 use FlareWeber\Http\Controllers\SiteController;
 use FlareWeber\Http\Controllers\StripeConnectController;
 use Illuminate\Support\Facades\Route;
+
+Route::get('admin', [AdminController::class, 'index'])->name('admin');
 
 Route::get('cloudflare/connect', [CloudflareOAuthController::class, 'connect'])->name('cloudflare.connect');
 Route::get('cloudflare/callback', [CloudflareOAuthController::class, 'callback'])->name('cloudflare.callback');

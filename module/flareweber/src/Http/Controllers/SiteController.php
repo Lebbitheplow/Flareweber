@@ -57,6 +57,10 @@ class SiteController extends Controller
             'settings' => 'sometimes|array',
         ]);
 
+        if (array_key_exists('settings', $data)) {
+            $data['settings'] = array_merge($site->settings ?? [], $data['settings']);
+        }
+
         $site->update($data);
 
         return response()->json($this->present($site->fresh()));
@@ -72,6 +76,7 @@ class SiteController extends Controller
             'domain' => $site->domain,
             'worker' => $site->worker_name,
             'cloudflare_connected' => $site->cloudflareConnection !== null,
+            'settings' => $site->settings ?? [],
             'ecommerce' => $site->requiresEcommerce(),
             'published_at' => $site->published_at?->toIso8601String(),
             'latest_deployment' => $latest ? [

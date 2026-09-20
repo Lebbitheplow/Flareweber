@@ -37,19 +37,20 @@ class CloudflareOAuthController extends Controller
         if (!$client->verifyToken()) {
             $connection->delete();
 
-            return redirect('/flareweber/cloudflare/connect')
-                ->withErrors(['cloudflare' => 'Token was created but is not active. Try again.']);
+            return redirect('/flareweber/admin?error=token_inactive#/settings');
         }
 
         $accounts = $client->accounts();
 
         if (count($accounts) === 1) {
-            return $this->selectAccountById($connection, $accounts[0]['id'] ?? '', $accounts[0]['name'] ?? '');
+            $this->finalizeAccount($connection, $accounts[0]['id'] ?? '', $accounts[0]['name'] ?? '');
+
+            return redirect('/flareweber/admin#/new');
         }
 
         session(['flareweber.cf_pending_connection' => $connection->id, 'flareweber.cf_accounts' => $accounts]);
 
-        return redirect('/flareweber/cloudflare/accounts');
+        return redirect('/flareweber/admin#/cloudflare-accounts');
     }
 
     public function accounts()
@@ -74,7 +75,13 @@ class CloudflareOAuthController extends Controller
             }
         }
 
-        return $this->selectAccountById($connection, $request->input('account_id'), $name);
+        $this->finalizeAccount($connection, $request->input('account_id'), $name);
+
+        return response()->json([
+            'connected' => true,
+            'account_id' => $connection->account_id,
+            'account_name' => $connection->account_name,
+        ]);
     }
 
     public function status()
@@ -90,6 +97,7 @@ class CloudflareOAuthController extends Controller
 
         return response()->json([
             'connected' => !$connection->isExpired(),
+            'connection_id' => $connection->id,
             'account_id' => $connection->account_id,
             'account_name' => $connection->account_name,
         ]);
@@ -102,7 +110,7 @@ class CloudflareOAuthController extends Controller
         return response()->json(['disconnected' => true]);
     }
 
-    private function selectAccountById(CloudflareConnection $connection, string $accountId, string $name)
+    private function finalizeAccount(CloudflareConnection $connection, string $accountId, string $name): void
     {
         $connection->update([
             'account_id' => $accountId,
@@ -111,7 +119,5 @@ class CloudflareOAuthController extends Controller
         ]);
 
         session()->forget(['flareweber.cf_pending_connection', 'flareweber.cf_accounts']);
-
-        return redirect('/flareweber/sites/create');
     }
 }

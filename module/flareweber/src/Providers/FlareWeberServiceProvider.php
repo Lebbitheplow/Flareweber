@@ -41,5 +41,35 @@ class FlareWeberServiceProvider extends ServiceProvider
         Route::prefix('flareweber/webhooks')
             ->name('flareweber.webhooks.')
             ->group(__DIR__ . '/../../routes/webhooks.php');
+
+        $this->registerAdminMenu();
+    }
+
+    /**
+     * Add the FlareWeber admin SPA to the Microweber admin menu when running
+     * inside Microweber. Guarded so a Microweber API change never breaks the
+     * module (the SPA stays reachable at /flareweber/admin regardless).
+     */
+    private function registerAdminMenu(): void
+    {
+        $manager = '\MicroweberPackages\AdminManager\Facades\AdminManager';
+        $linkClass = '\MicroweberPackages\AdminManager\MenuTypes\MenuLink';
+
+        if (! class_exists($manager) || ! class_exists($linkClass)) {
+            return;
+        }
+
+        try {
+            $menu = new $linkClass();
+            $menu->setName('FlareWeber')
+                ->setUri('/flareweber/admin')
+                ->setIcon('zap')
+                ->setPosition(10)
+                ->setMenuLocation('secondary_sidebar_top');
+
+            $manager::registerMenu($menu);
+        } catch (\Throwable) {
+            // Menu registration is best-effort.
+        }
     }
 }

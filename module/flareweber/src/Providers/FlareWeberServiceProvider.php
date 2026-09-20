@@ -31,5 +31,10 @@ class FlareWeberServiceProvider extends ServiceProvider
             ->name('flareweber.')
             ->middleware('web')
             ->group(__DIR__ . '/../routes/web.php');
+
+        // Server-to-server callbacks: no session/CSRF middleware.
+        Route::prefix('flareweber/webhooks')
+            ->name('flareweber.webhooks.')
+            ->group(__DIR__ . '/../routes/webhooks.php');
     }
 }

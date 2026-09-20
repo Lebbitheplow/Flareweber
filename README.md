@@ -85,7 +85,7 @@ static-php-cli on Linux, php.net thread-safe zip on Windows.
 | Sites | `GET/POST /flareweber/sites`, `GET/PUT /flareweber/sites/{id}` |
 | Publish | `POST /flareweber/sites/{id}/publish`, `POST .../preview`, `GET .../deployments`, `POST .../deployments/{v}/rollback` |
 | Domain | `POST /flareweber/sites/{id}/domain/check`, `POST .../domain/connect` |
-| Stripe | `GET /flareweber/sites/{id}/stripe/connect`, `GET .../callback` |
+| Stripe | `GET /flareweber/sites/{id}/stripe/connect`, `GET .../callback`, `POST /flareweber/webhooks/stripe` (Connect lifecycle, CSRF-exempt, signature-verified) |
 
 Key classes: `Cloudflare/OAuthService` (PKCE + state), `Cloudflare/ResourceProvisioner`
 (Worker/D1/R2 created only when the site needs them), `Compiler/SiteCompiler`
@@ -123,9 +123,8 @@ Key classes: `Cloudflare/OAuthService` (PKCE + state), `Cloudflare/ResourceProvi
 
 ## Known gaps (next milestones)
 
-- Deploy uses the wrangler CLI; replace with the direct Workers "upload
-  version" REST API so OAuth tokens work without wrangler on the host
-  (see TODO in `CloudflareWorkersProvider`)
+- Live Cloudflare validation of the REST deploy path (contract verified against
+  docs + wrangler source and unit-tested; not yet exercised end to end)
 - R2 media upload/sync from the Microweber media manager
-- Admin UI (mobile-first screen set exists as a design mockup), Stripe Connect
-  webhook receiver in the module, export/migration commands
+- Admin UI (mobile-first screen set exists as a design mockup), export/migration
+  commands

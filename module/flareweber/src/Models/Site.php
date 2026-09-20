@@ -35,6 +35,17 @@ class Site extends Model
         return $this->deployments()->latest('version')->first();
     }
 
+    public static function findByStripeAccount(string $accountId): ?self
+    {
+        if ($accountId === '') {
+            return null;
+        }
+
+        return static::query()
+            ->whereJsonIs('settings->stripe_account_id', $accountId)
+            ->first();
+    }
+
     public function requiresD1(): bool
     {
         return (bool) ($this->settings['forms'] ?? false) || $this->requiresEcommerce();

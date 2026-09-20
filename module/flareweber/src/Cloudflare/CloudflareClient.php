@@ -40,6 +40,55 @@ class CloudflareClient
         return $this->request('delete', $path, [], $throwOnError);
     }
 
+    /**
+     * Multipart/form-data request used by the Workers upload endpoints.
+     *
+     * @param array<int, array{name: string, contents: string, filename?: string|null, headers?: array<string,string>}> $parts
+     * @param array<string, string|int|bool> $query
+     */
+    public function multipart(
+        string $method,
+        string $path,
+        array $parts,
+        array $query = [],
+        ?string $bearerToken = null,
+        bool $throwOnError = true
+    ): array {
+        $request = $this->client(300);
+
+        if ($bearerToken !== null) {
+            $request = Http::withToken($bearerToken)->acceptJson()->timeout(300);
+        }
+
+        foreach ($parts as $part) {
+            $request = $request->attach(
+                $part['name'],
+                $part['contents'],
+                $part['filename'] ?? null,
+                $part['headers'] ?? []
+            );
+        }
+
+        $url = $this->apiBase . $path;
+        if ($query !== []) {
+            $url .= (str_contains($url, '?') ? '&' : '?') . http_build_query($query);
+        }
+
+        $response = $request->{$method}($url);
+        $payload = $response->json() ?? [];
+
+        if ($throwOnError && !$response->successful()) {
+            $errors = $payload['errors'] ?? [['message' => $response->status() . ' ' . $response->body()]];
+
+            throw new RuntimeException(
+                'Cloudflare API error on ' . strtoupper($method) . ' ' . $path . ': '
+                . json_encode($errors)
+            );
+        }
+
+        return $payload;
+    }
+
     public function accounts(): array
     {
         return $this->get('/accounts')['result'] ?? [];
@@ -71,10 +120,10 @@ class CloudflareClient
         return $payload;
     }
 
-    private function client(): PendingRequest
+    private function client(int $timeout = 30): PendingRequest
     {
         return Http::withToken($this->connection->access_token)
             ->acceptJson()
-            ->timeout(30);
+            ->timeout($timeout);
     }
 }

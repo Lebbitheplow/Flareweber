@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
+    "bundle": "npx --yes esbuild@0.25 src/index.ts --bundle --format=esm --platform=neutral --outfile=dist/worker.mjs --minify",
     "typecheck": "tsc --noEmit",
     "db:migrate:local": "wrangler d1 execute site-db --local --file=./schema.sql"
   },

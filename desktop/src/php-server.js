@@ -31,6 +31,7 @@ class PhpServer {
       APP_URL: this.url,
       DB_CONNECTION: 'sqlite',
       DB_DATABASE: this.paths.databaseFile,
+      WORKER_TEMPLATE_PATH: this.paths.workerTemplatePath,
       PHP_CLI_SERVER_WORKERS: '4',
     };
 

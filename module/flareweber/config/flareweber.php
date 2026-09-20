@@ -10,6 +10,7 @@ return [
             'CLOUDFLARE_OAUTH_SCOPES',
             'user.read workers:write workers_routes:write workers_tail:read d1:write r2:write zone:read ssl_cert:write'
         ),
+        'worker_compatibility_date' => env('CLOUDFLARE_WORKER_COMPAT_DATE', '2025-09-01'),
     ],
 
     'stripe' => [

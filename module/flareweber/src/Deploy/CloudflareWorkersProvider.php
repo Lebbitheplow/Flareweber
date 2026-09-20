@@ -9,8 +9,6 @@ use FlareWeber\Models\CloudflareConnection;
 use FlareWeber\Models\Site;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Facades\Process;
-use Symfony\Component\Process\Exception\ProcessFailedException;
 
 class CloudflareWorkersProvider implements DeploymentProviderInterface
 {
@@ -35,35 +33,33 @@ class CloudflareWorkersProvider implements DeploymentProviderInterface
     public function deploy(Site $site, CompiledSite $compiled, string $environment): DeploymentResult
     {
         $connection = $this->connection($site);
-        $buildDir = $this->prepareBuild($site, $compiled, $environment);
+        $client = CloudflareClient::forConnection($connection);
+        $workerName = $this->workerName($site, $environment);
 
-        $command = sprintf(
-            'cd %s && npx --yes wrangler versions upload --message %s --quota-expiration-backup --json',
-            escapeshellarg($buildDir),
-            escapeshellarg('FlareWeber ' . $compiled->hash())
-        );
+        $modulePath = $this->prepareModule($compiled, $environment);
+        $assetsDir = $compiled->directory . '/worker/assets';
 
-        // TODO: replace the wrangler CLI call with the direct Workers "upload version"
-        // REST API so OAuth access tokens work without wrangler on the host.
-        $process = Process::timeout(600)->env([
-            'CF_API_TOKEN' => $connection->access_token,
-            'CF_ACCOUNT_ID' => $connection->account_id,
-        ])->run($command);
+        $uploader = new WorkerUploader($client, $connection->account_id);
+        $hasAssets = $uploader->hasAssets($assetsDir);
 
-        if (!$process->successful()) {
-            return DeploymentResult::failed(
-                $process->getErrorOutput() ?: $process->output()
+        try {
+            $workerVersionId = $uploader->deploy(
+                $workerName,
+                $modulePath,
+                $hasAssets ? $assetsDir : null,
+                $this->uploadMetadata($site, $hasAssets)
             );
+            $uploader->enableSubdomain($workerName);
+        } catch (\Throwable $e) {
+            return DeploymentResult::failed($e->getMessage());
         }
 
-        $result = json_decode(trim($process->output()), true) ?: [];
-
-        $log = ['uploaded worker version ' . ($result['version_id'] ?? '?')];
+        $log = ['uploaded worker version ' . $workerVersionId];
 
         $databaseId = $site->settings['d1_database_id'] ?? null;
         if ($databaseId && File::exists($compiled->directory . '/seed.sql')) {
             try {
-                $seeder = new D1Seeder(CloudflareClient::forConnection($connection));
+                $seeder = new D1Seeder($client);
                 $seeder->applySql($connection->account_id, $databaseId, File::get($compiled->directory . '/schema.sql'));
                 $seeder->applySql($connection->account_id, $databaseId, File::get($compiled->directory . '/seed.sql'));
                 $log[] = 'seeded D1 database ' . $databaseId;
@@ -74,7 +70,7 @@ class CloudflareWorkersProvider implements DeploymentProviderInterface
 
         return new DeploymentResult(
             success: true,
-            workerVersionId: $result['version_id'] ?? null,
+            workerVersionId: $workerVersionId,
             url: $this->workerUrl($site, $environment),
             log: $log
         );
@@ -83,18 +79,21 @@ class CloudflareWorkersProvider implements DeploymentProviderInterface
     public function rollback(Site $site, string $workerVersionId): DeploymentResult
     {
         $connection = $this->connection($site);
+        $client = CloudflareClient::forConnection($connection);
+        $workerName = $this->workerName($site, 'production');
 
-        $process = Process::timeout(300)->env([
-            'CF_API_TOKEN' => $connection->access_token,
-            'CF_ACCOUNT_ID' => $connection->account_id,
-        ])->run(sprintf(
-            'npx --yes wrangler versions rollback %s --message %s --json',
-            escapeshellarg($workerVersionId),
-            escapeshellarg('FlareWeber rollback')
-        ));
-
-        if (!$process->successful()) {
-            return DeploymentResult::failed($process->getErrorOutput() ?: $process->output());
+        try {
+            $client->post(
+                "/accounts/{$connection->account_id}/workers/scripts/{$workerName}/deployments",
+                [
+                    'strategy' => 'percentage',
+                    'versions' => [
+                        ['version_id' => $workerVersionId, 'percentage' => 100],
+                    ],
+                ]
+            );
+        } catch (\Throwable $e) {
+            return DeploymentResult::failed($e->getMessage());
         }
 
         return new DeploymentResult(
@@ -113,67 +112,74 @@ class CloudflareWorkersProvider implements DeploymentProviderInterface
         }
     }
 
-    private function prepareBuild(Site $site, CompiledSite $compiled, string $environment): string
+    private function prepareModule(CompiledSite $compiled, string $environment): string
     {
         $template = rtrim(config('flareweber.worker.template_path'), '/');
         $buildDir = dirname($compiled->directory) . '/deploy-' . $environment;
 
-        File::copyDirectory($template . '/src', $buildDir . '/src');
-        File::copy($template . '/package.json', $buildDir . '/package.json');
-        File::copy($template . '/tsconfig.json', $buildDir . '/tsconfig.json');
-        File::copyDirectory($compiled->directory . '/worker/assets', $buildDir . '/assets');
-        File::put($buildDir . '/schema.sql', File::get($template . '/schema.sql'));
-        File::put($buildDir . '/wrangler.jsonc', $this->wranglerConfig($site, $environment));
+        $prebuilt = $template . '/dist/worker.mjs';
+        if (is_file($prebuilt)) {
+            File::ensureDirectoryExists($buildDir);
+            File::copy($prebuilt, $buildDir . '/worker.mjs');
 
-        return $buildDir;
+            return $buildDir . '/worker.mjs';
+        }
+
+        $bundled = (new WorkerBundler($template))->bundle($buildDir);
+
+        if ($bundled === null) {
+            throw new \RuntimeException(
+                'Unable to bundle the Worker. Run "npm run bundle" in the worker template to produce dist/worker.mjs.'
+            );
+        }
+
+        return $bundled;
     }
 
-    private function wranglerConfig(Site $site, string $environment): string
+    /**
+     * Build the Workers upload metadata (bindings + compatibility) for a site.
+     *
+     * @return array<string, mixed>
+     */
+    private function uploadMetadata(Site $site, bool $hasAssets): array
     {
-        $isPreview = $environment === 'preview';
-        $workerName = $isPreview && $site->preview_worker_name
-            ? $site->preview_worker_name
-            : ($site->worker_name ?: 'flareweber-' . $site->id);
-
-        $config = [
-            'name' => $workerName,
-            'main' => 'src/index.ts',
-            'compatibility_date' => '2025-09-01',
-            'assets' => [
-                'directory' => './assets',
-                'binding' => 'ASSETS',
-            ],
-            'vars' => [
-                'SITE_ID' => (string) $site->id,
-                'SITE_DOMAIN' => $site->domain ?? '',
-            ],
+        $bindings = [
+            ['type' => 'plain_text', 'name' => 'SITE_ID', 'text' => (string) $site->id],
+            ['type' => 'plain_text', 'name' => 'SITE_DOMAIN', 'text' => (string) ($site->domain ?? '')],
         ];
 
-        if ($site->d1_database_name) {
-            $config['d1_databases'] = [[
-                'binding' => 'DB',
-                'database_name' => $site->d1_database_name,
-                'database_id' => $site->settings['d1_database_id'] ?? $site->d1_database_name,
-            ]];
+        if ($hasAssets) {
+            $bindings[] = ['type' => 'assets', 'name' => 'ASSETS'];
+        }
+
+        $d1Id = $site->settings['d1_database_id'] ?? null;
+        if ($d1Id) {
+            $bindings[] = ['type' => 'd1', 'name' => 'DB', 'id' => $d1Id];
         }
 
         if ($site->r2_bucket_name) {
-            $config['r2_buckets'] = [[
-                'binding' => 'MEDIA',
-                'bucket_name' => $site->r2_bucket_name,
-            ]];
+            $bindings[] = ['type' => 'r2_bucket', 'name' => 'MEDIA', 'bucket_name' => $site->r2_bucket_name];
         }
 
-        return json_encode($config, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+        return [
+            'main_module' => 'worker.mjs',
+            'compatibility_date' => config('flareweber.cloudflare.worker_compatibility_date', '2025-09-01'),
+            'bindings' => $bindings,
+        ];
+    }
+
+    private function workerName(Site $site, string $environment): string
+    {
+        if ($environment === 'preview' && $site->preview_worker_name) {
+            return $site->preview_worker_name;
+        }
+
+        return $site->worker_name ?: 'flareweber-' . $site->id;
     }
 
     private function workerUrl(Site $site, string $environment): ?string
     {
-        $name = $environment === 'preview'
-            ? ($site->preview_worker_name ?: $site->worker_name)
-            : $site->worker_name;
-
-        return $name ? "https://{$name}.workers.dev" : null;
+        return 'https://' . $this->workerName($site, $environment) . '.workers.dev';
     }
 
     private function connection(Site $site): CloudflareConnection

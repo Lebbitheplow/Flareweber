@@ -37,6 +37,10 @@
       {
         "from": "resources/microweber",
         "to": "microweber"
+      },
+      {
+        "from": "resources/worker",
+        "to": "worker"
       }
     ],
     "linux": {

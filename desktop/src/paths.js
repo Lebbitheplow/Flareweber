@@ -29,6 +29,12 @@ const phpBinary = process.platform === 'win32'
 
 const bundledAppDir = path.join(bundledRoot, 'microweber');
 
+// Read-only Worker template (src + prebuilt dist/worker.mjs). In dev this is the
+// repo's worker/ directory; when packaged it ships under resources/worker.
+const workerTemplatePath = isPackaged
+  ? path.join(bundledRoot, 'worker')
+  : path.join(__dirname, '..', '..', 'worker');
+
 const logFile = path.join(dataDir, 'logs', 'php-server.log');
 const credentialsFile = path.join(dataDir, 'admin-credentials.json');
 
@@ -36,6 +42,7 @@ function paths() {
   return {
     bundledRoot,
     bundledAppDir,
+    workerTemplatePath,
     appDir,
     dataDir,
     databaseFile,

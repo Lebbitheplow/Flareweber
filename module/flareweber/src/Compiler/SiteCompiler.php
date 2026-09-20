@@ -15,12 +15,16 @@ class SiteCompiler
     ) {
     }
 
-    public function compile(Site $site): CompiledSite
+    public function compile(Site $site, bool $mediaViaR2 = false): CompiledSite
     {
         $buildPath = rtrim(config('flareweber.worker.build_path'), '/');
         $directory = $buildPath . '/' . $site->id . '/' . Str::uuid();
 
         File::ensureDirectoryExists($directory . '/worker/assets');
+
+        $mediaPrefix = $mediaViaR2
+            ? trim((string) config('flareweber.media.prefix', 'media'), '/')
+            : null;
 
         $baseUrl = rtrim((string) config('app.url'), '/');
         $compiler = new HtmlCompiler();
@@ -33,11 +37,11 @@ class SiteCompiler
 
         $products = $site->requiresEcommerce() ? $this->products->products() : [];
 
-        $assetPaths = $this->collectAssetPaths($pages, $baseUrl, $compiler);
+        $assetPaths = $this->collectAssetPaths($pages, $baseUrl, $compiler, $mediaPrefix);
         $copiedAssets = $this->copyAssets($baseUrl, $assetPaths, $directory . '/worker/assets');
 
         foreach ($pages as $path => $html) {
-            $final = $compiler->rewrite($html, $baseUrl, array_keys($pages), array_keys($copiedAssets));
+            $final = $compiler->rewrite($html, $baseUrl, array_keys($pages), array_keys($copiedAssets), $mediaPrefix);
             $target = $directory . '/worker/assets/' . $this->assetPathForPage($path);
             File::ensureDirectoryExists(dirname($target));
             File::put($target, $final);
@@ -81,7 +85,7 @@ class SiteCompiler
     /**
      * @return array<int, string>
      */
-    private function collectAssetPaths(array $pages, string $baseUrl, HtmlCompiler $compiler): array
+    private function collectAssetPaths(array $pages, string $baseUrl, HtmlCompiler $compiler, ?string $mediaPrefix = null): array
     {
         $paths = [];
         $skip = ['/', '/favicon.ico', '/robots.txt', '/manifest.json', '/manifest.webmanifest'];
@@ -90,7 +94,8 @@ class SiteCompiler
             foreach ($compiler->extractLocalAssetPaths($html, $baseUrl) as $path) {
                 $ext = $compiler->extension($path);
                 if (in_array($ext, ['css', 'js', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'woff', 'woff2', 'ttf', 'avif'], true)
-                    && !in_array($path, $skip, true)) {
+                    && !in_array($path, $skip, true)
+                    && !($mediaPrefix !== null && $compiler->isMediaPath($path))) {
                     $paths[] = $path;
                 }
             }

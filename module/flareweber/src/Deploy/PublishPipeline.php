@@ -22,8 +22,11 @@ class PublishPipeline
             $this->validate($site, $deployment);
             $this->provision($site, $deployment);
 
+            // Upload media before deploying so rewritten /media/* URLs resolve.
+            $mediaViaR2 = $site->requiresR2() && $this->syncMedia($site, $deployment);
+
             $deployment->appendLog('Compiling site...');
-            $compiled = $this->compiler->compile($site);
+            $compiled = $this->compiler->compile($site, mediaViaR2: $mediaViaR2);
             $deployment->artifact_hash = $compiled->hash();
             $deployment->save();
             $deployment->appendLog("Compiled {$compiled->manifest['product_count']} products, "
@@ -44,10 +47,6 @@ class PublishPipeline
             $deployment->worker_version_id = $result->workerVersionId;
             $deployment->url = $result->url;
             $deployment->save();
-
-            if ($environment === 'production' && $site->requiresR2()) {
-                $this->syncMedia($site, $deployment);
-            }
 
             if ($result->url !== null) {
                 $deployment->appendLog('Health check ' . $result->url . '...');
@@ -127,17 +126,22 @@ class PublishPipeline
             . ', R2: ' . ($resources['r2'] ? 'yes' : 'none'));
     }
 
-    private function syncMedia(Site $site, Deployment $deployment): void
+    /**
+     * Upload new/changed media to R2 before deploy so compiled pages can
+     * reference /media/*. Returns true when the bucket is live for this site.
+     */
+    private function syncMedia(Site $site, Deployment $deployment): bool
     {
-        $deployment->appendLog('Syncing media library to R2...');
-
         try {
             $summary = $this->provider->syncMedia($site);
 
             if ($summary === null) {
-                return;
+                $deployment->appendLog('Media: R2 bucket not provisioned; media stays in the asset bundle.');
+
+                return false;
             }
 
+            $deployment->appendLog('Syncing media library to R2...');
             $deployment->appendLog(sprintf(
                 'Media: %d uploaded, %d unchanged, %d removed%s.',
                 $summary['uploaded'],
@@ -145,8 +149,12 @@ class PublishPipeline
                 $summary['deleted'],
                 $summary['skipped'] > 0 ? ", {$summary['skipped']} over size limit" : ''
             ));
+
+            return true;
         } catch (\Throwable $e) {
-            $deployment->appendLog('Media sync failed (site still published): ' . $e->getMessage());
+            $deployment->appendLog('Media sync failed (media will 404 until fixed): ' . $e->getMessage());
+
+            return false;
         }
     }
 }

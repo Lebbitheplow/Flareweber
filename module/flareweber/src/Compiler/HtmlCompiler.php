@@ -11,6 +11,16 @@ namespace FlareWeber\Compiler;
 class HtmlCompiler
 {
     /**
+     * File types that, when served from /userfiles/ on a site with an R2
+     * media bucket, are rewritten to the Worker's /media/* route instead of
+     * being bundled as static assets.
+     */
+    public const MEDIA_EXTENSIONS = [
+        'png', 'jpg', 'jpeg', 'gif', 'webp', 'avif', 'ico', 'svg',
+        'mp4', 'webm', 'mp3', 'pdf',
+    ];
+
+    /**
      * Remove Microweber admin/live-edit chrome from a rendered page.
      */
     public function clean(string $html): string
@@ -50,8 +60,9 @@ class HtmlCompiler
      *
      * @param array<int, string> $pagePaths paths that exist in the compiled site, e.g. ['/', '/about']
      * @param array<int, string> $assetPaths local asset paths kept in the build, e.g. ['/userfiles/templates/x.css']
+     * @param string|null $mediaPrefix when set (e.g. "media"), /userfiles/ media URLs are rewritten to /{$mediaPrefix}/* (R2) instead of bundled
      */
-    public function rewrite(string $html, string $baseUrl, array $pagePaths, array $assetPaths): string
+    public function rewrite(string $html, string $baseUrl, array $pagePaths, array $assetPaths, ?string $mediaPrefix = null): string
     {
         $host = parse_url($baseUrl, PHP_URL_HOST) ?: '';
         $pagePaths = array_map(fn ($p) => rtrim($p, '/') ?: '/', $pagePaths);
@@ -60,12 +71,16 @@ class HtmlCompiler
 
         $html = preg_replace_callback(
             '#\s(href|src|poster)="([^"]+)"#i',
-            function (array $m) use ($host, $pageMap, $assetMap): string {
+            function (array $m) use ($host, $pageMap, $assetMap, $mediaPrefix): string {
                 $attr = $m[1];
                 $url = $m[2];
 
                 if ($host !== '' && stripos($url, $host) !== false) {
                     $path = parse_url($url, PHP_URL_PATH) ?: '/';
+
+                    if ($mediaPrefix !== null && $this->isMediaPath($path)) {
+                        return " {$attr}=\"/" . $mediaPrefix . '/' . substr($path, strlen('/userfiles/')) . '"';
+                    }
                     if (isset($pageMap[$path])) {
                         return " {$attr}=\"" . ($pageMap[$path] === '/' ? './' : rtrim($pageMap[$path], '/') . '/') . '"';
                     }
@@ -77,6 +92,9 @@ class HtmlCompiler
                 }
 
                 if (str_starts_with($url, '/')) {
+                    if ($mediaPrefix !== null && $this->isMediaPath($url)) {
+                        return " {$attr}=\"/" . $mediaPrefix . '/' . substr($url, strlen('/userfiles/')) . '"';
+                    }
                     if (isset($pageMap[rtrim($url, '/') ?: '/'])) {
                         $clean = $pageMap[rtrim($url, '/') ?: '/'];
 
@@ -123,6 +141,16 @@ class HtmlCompiler
         }
 
         return array_values(array_unique($paths));
+    }
+
+    /**
+     * True for uploaded media under /userfiles/ that should be served from R2.
+     */
+    public function isMediaPath(string $path): bool
+    {
+        return str_starts_with($path, '/userfiles/')
+            && strlen($path) > strlen('/userfiles/')
+            && in_array($this->extension($path), self::MEDIA_EXTENSIONS, true);
     }
 
     /**

@@ -134,7 +134,8 @@ Key classes: `Cloudflare/OAuthService` (PKCE + state), `Cloudflare/ResourceProvi
 - Live Cloudflare validation of the REST deploy + R2 sync paths (contracts
   verified against docs + wrangler source and unit-tested; not yet exercised
   end to end against a real account)
-- Media sync runs on publish; a media-manager-triggered incremental sync and
-  rewriting media URLs in compiled HTML to `/media/*` are still open
+- Media syncs before each production publish; compiled pages reference R2
+  media at `/media/*`. A media-manager-triggered incremental sync (between
+  publishes) is still open
 - Admin SPA covers FlareWeber flows; content editing stays in the stock
   Microweber admin (link out)

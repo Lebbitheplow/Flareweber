@@ -7,6 +7,7 @@ import orders from './routes/orders'
 import customers from './routes/customers'
 import webhooks from './routes/webhooks'
 import forms from './routes/forms'
+import media from './routes/media'
 
 const api = new Hono<Env>()
 
@@ -22,6 +23,7 @@ api.route('/forms', forms)
 const app = new Hono<Env>()
 
 app.route('/api', api)
+app.route('/media', media)
 
 app.notFound((c) => c.env.ASSETS.fetch(c.req.raw))
 
@@ -34,13 +36,14 @@ export default {
   fetch(request: Request, env: Env['Bindings'], ctx: ExecutionContext): Response | Promise<Response> {
     const url = new URL(request.url)
 
-    if (!url.pathname.startsWith('/api/')) {
-      const asset = env.ASSETS.fetch(request)
-      return asset.then((response) =>
-        response.status === 404 ? app.fetch(request, env, ctx) : response
-      )
+    // API and R2-backed media are dynamic; everything else is a static asset.
+    if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/media/')) {
+      return app.fetch(request, env, ctx)
     }
 
-    return app.fetch(request, env, ctx)
+    const asset = env.ASSETS.fetch(request)
+    return asset.then((response) =>
+      response.status === 404 ? app.fetch(request, env, ctx) : response
+    )
   },
 }

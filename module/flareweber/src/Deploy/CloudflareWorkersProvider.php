@@ -103,6 +103,21 @@ class CloudflareWorkersProvider implements DeploymentProviderInterface
         );
     }
 
+    public function syncMedia(Site $site): ?array
+    {
+        if (!$site->requiresR2() || empty($site->r2_bucket_name)) {
+            return null;
+        }
+
+        $connection = $this->connection($site);
+        $syncer = new MediaSyncService(
+            CloudflareClient::forConnection($connection),
+            $connection->account_id
+        );
+
+        return $syncer->sync($site, MediaSyncService::defaultSourceDir());
+    }
+
     public function verify(string $url): bool
     {
         try {

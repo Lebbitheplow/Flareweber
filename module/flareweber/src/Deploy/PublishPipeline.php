@@ -45,6 +45,10 @@ class PublishPipeline
             $deployment->url = $result->url;
             $deployment->save();
 
+            if ($environment === 'production' && $site->requiresR2()) {
+                $this->syncMedia($site, $deployment);
+            }
+
             if ($result->url !== null) {
                 $deployment->appendLog('Health check ' . $result->url . '...');
                 $healthy = $this->provider->verify($result->url);
@@ -121,5 +125,28 @@ class PublishPipeline
         $deployment->appendLog('Worker: ' . ($resources['worker']['script_name'] ?? 'ok')
             . ', D1: ' . ($resources['d1'] ? 'yes' : 'none')
             . ', R2: ' . ($resources['r2'] ? 'yes' : 'none'));
+    }
+
+    private function syncMedia(Site $site, Deployment $deployment): void
+    {
+        $deployment->appendLog('Syncing media library to R2...');
+
+        try {
+            $summary = $this->provider->syncMedia($site);
+
+            if ($summary === null) {
+                return;
+            }
+
+            $deployment->appendLog(sprintf(
+                'Media: %d uploaded, %d unchanged, %d removed%s.',
+                $summary['uploaded'],
+                $summary['unchanged'],
+                $summary['deleted'],
+                $summary['skipped'] > 0 ? ", {$summary['skipped']} over size limit" : ''
+            ));
+        } catch (\Throwable $e) {
+            $deployment->appendLog('Media sync failed (site still published): ' . $e->getMessage());
+        }
     }
 }

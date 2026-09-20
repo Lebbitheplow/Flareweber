@@ -89,6 +89,58 @@ class CloudflareClient
         return $payload;
     }
 
+    /**
+     * PUT a raw request body with an explicit Content-Type. Used for the R2
+     * object endpoint (PUT /accounts/{acct}/r2/buckets/{bucket}/objects/{key}),
+     * where the body is the object bytes rather than JSON.
+     */
+    public function putRaw(string $path, string $body, string $contentType, bool $throwOnError = true): array
+    {
+        $response = $this->client(300)
+            ->withHeader('Content-Type', $contentType)
+            ->withBody($body, $contentType)
+            ->put($this->apiBase . $path);
+
+        $payload = $response->json() ?? [];
+
+        if ($throwOnError && !$response->successful()) {
+            $errors = $payload['errors'] ?? [['message' => $response->status() . ' ' . $response->body()]];
+
+            throw new RuntimeException(
+                'Cloudflare API error on PUT ' . $path . ': ' . json_encode($errors)
+            );
+        }
+
+        return $payload;
+    }
+
+    /**
+     * List every object key in an R2 bucket (paginated).
+     *
+     * @return array<int, string>
+     */
+    public function listR2Keys(string $accountId, string $bucket): array
+    {
+        $keys = [];
+        $cursor = null;
+
+        do {
+            $query = $cursor !== null ? ['cursor' => $cursor] : [];
+            $payload = $this->get("/accounts/{$accountId}/r2/buckets/{$bucket}/objects", $query);
+            $result = $payload['result'] ?? [];
+
+            foreach ($result['objects'] ?? [] as $object) {
+                if (isset($object['key'])) {
+                    $keys[] = $object['key'];
+                }
+            }
+
+            $cursor = !empty($result['truncated']) ? ($result['cursor'] ?? null) : null;
+        } while ($cursor);
+
+        return $keys;
+    }
+
     public function accounts(): array
     {
         return $this->get('/accounts')['result'] ?? [];

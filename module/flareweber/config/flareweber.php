@@ -24,6 +24,16 @@ return [
         'build_path' => env('WORKER_BUILD_PATH', storage_path('app/flareweber/builds')),
     ],
 
+    'media' => [
+        // Directory synced to the site's R2 bucket on publish. Defaults to the
+        // bundled Microweber media library (public/userfiles).
+        'source' => env('FLAREWEBER_MEDIA_SOURCE'),
+        // Key prefix inside the R2 bucket; also the Worker /media/* path.
+        'prefix' => env('FLAREWEBER_MEDIA_PREFIX', 'media'),
+        // Skip anything larger than this (R2 objects ship through the API).
+        'max_file_bytes' => (int) env('FLAREWEBER_MEDIA_MAX_FILE_BYTES', 104857600),
+    ],
+
     'compiler' => [
         'max_pages' => env('FLAREWEBER_MAX_COMPILE_PAGES', 50),
     ],

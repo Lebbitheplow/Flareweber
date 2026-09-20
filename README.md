@@ -86,6 +86,8 @@ static-php-cli on Linux, php.net thread-safe zip on Windows.
 | Publish | `POST /flareweber/sites/{id}/publish`, `POST .../preview`, `GET .../deployments`, `POST .../deployments/{v}/rollback` |
 | Domain | `POST /flareweber/sites/{id}/domain/check`, `POST .../domain/connect` |
 | Stripe | `GET /flareweber/sites/{id}/stripe/connect`, `GET .../callback`, `POST /flareweber/webhooks/stripe` (Connect lifecycle, CSRF-exempt, signature-verified) |
+| Admin UI | `GET /flareweber/admin` — self-contained mobile-first SPA (sites, publish, deploys/rollback, domains, settings) wired to the JSON APIs above |
+| CLI | `php artisan flareweber:export [--site=ID] [--out=file.json]`, `php artisan flareweber:import file.json` (secret-free portable bundles) |
 
 Key classes: `Cloudflare/OAuthService` (PKCE + state), `Cloudflare/ResourceProvisioner`
 (Worker/D1/R2 created only when the site needs them), `Compiler/SiteCompiler`
@@ -97,15 +99,21 @@ Key classes: `Cloudflare/OAuthService` (PKCE + state), `Cloudflare/ResourceProvi
 
 1. Validate (Cloudflare connected, Stripe connected when ecommerce is on)
 2. Provision missing resources (Worker, D1 when forms/shop, R2 when media)
-3. Compile site to `storage/app/flareweber/builds/{site}/{uuid}`
-4. `wrangler versions upload` the worker template + compiled assets
-5. Health check the worker URL; every attempt is recorded in `flare_deployments`
+3. Sync the Microweber media library to the site's R2 bucket (incremental
+   sha256 manifest of `public/userfiles`; deletions pruned; oversize files skipped)
+4. Compile site to `storage/app/flareweber/builds/{site}/{uuid}`
+5. Upload via the Cloudflare Workers REST API (assets upload session +
+   `versions` deploy — no wrangler at runtime; the Worker bundle ships inside
+   the desktop app)
+6. Health check the worker URL; every attempt is recorded in `flare_deployments`
    and rollback re-points to a previous worker version
 
 ## Worker runtime (worker/)
 
 - `GET /*` static compiled pages via the Assets binding; the Worker answers
   404s and everything under `/api/*`
+- `/media/*` streams the site's R2 bucket (content types, immutable cache,
+  ETags) so uploaded media is served at the edge
 - `/api/products`, `/api/cart`, `/api/checkout` (Stripe Checkout Sessions),
   `/api/orders`, `/api/customers`, `/api/forms`, `/api/webhooks/stripe`
   (signature-verified, marks orders paid, decrements inventory)
@@ -123,8 +131,10 @@ Key classes: `Cloudflare/OAuthService` (PKCE + state), `Cloudflare/ResourceProvi
 
 ## Known gaps (next milestones)
 
-- Live Cloudflare validation of the REST deploy path (contract verified against
-  docs + wrangler source and unit-tested; not yet exercised end to end)
-- R2 media upload/sync from the Microweber media manager
-- Admin UI (mobile-first screen set exists as a design mockup), export/migration
-  commands
+- Live Cloudflare validation of the REST deploy + R2 sync paths (contracts
+  verified against docs + wrangler source and unit-tested; not yet exercised
+  end to end against a real account)
+- Media sync runs on publish; a media-manager-triggered incremental sync and
+  rewriting media URLs in compiled HTML to `/media/*` are still open
+- Admin SPA covers FlareWeber flows; content editing stays in the stock
+  Microweber admin (link out)

@@ -1,0 +1,61 @@
+{
+  "name": "flareweber-desktop",
+  "productName": "FlareWeber",
+  "version": "0.1.0",
+  "description": "Desktop website builder: bundled Microweber authoring, publish to your own Cloudflare account.",
+  "homepage": "https://github.com/flareweber/flareweber",
+  "main": "src/main.js",
+  "author": "FlareWeber",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "fetch:runtime": "node scripts/fetch-runtime.mjs",
+    "prepare:app": "node scripts/prepare-app.mjs",
+    "build": "electron-builder",
+    "build:win": "electron-builder --win",
+    "build:linux": "electron-builder --linux",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.flareweber.desktop",
+    "productName": "FlareWeber",
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/php",
+        "to": "php"
+      },
+      {
+        "from": "resources/microweber",
+        "to": "microweber"
+      }
+    ],
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Development",
+      "maintainer": "FlareWeber"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    }
+  }
+}

@@ -31,6 +31,7 @@ D1 seed SQL that `D1Seeder` applies through the Cloudflare API on deploy.
 app/                      Microweber core (created by composer on first boot, gitignored)
 module/flareweber/        FlareWeber Microweber module (OAuth, provisioning, compile, deploy)
 worker/                   Per-site Cloudflare Worker template (Hono + D1 + R2 + static assets)
+desktop/                  Electron desktop app (bundles PHP + Microweber + module, SQLite)
 docker/                   PHP 8.3 apache image + first-boot entrypoint
 docker-compose.yml        Web + queue worker + MariaDB
 ```
@@ -53,6 +54,28 @@ npm install
 npm run dev                   # wrangler dev with local D1/R2 mocks
 npm run typecheck
 ```
+
+## Desktop app (Windows / Linux)
+
+The desktop app is an Electron shell that bundles a self-contained PHP
+runtime and the full Microweber app (with the FlareWeber module) inside the
+installer. On first launch it copies the app to the user's data directory,
+runs `microweber:install` with a bundled SQLite database, serves it on a
+random loopback port, and opens it in the window. Admin credentials land in
+`admin-credentials.json` in the data folder.
+
+```bash
+cd desktop
+npm install
+npm run prepare:app           # composer create-project + copies module/flareweber in
+npm run fetch:runtime         # downloads PHP runtime (Windows: php.net; Linux: --url, see CI)
+npm start                     # run unpacked for development
+npm run build:linux           # AppImage + deb (Linux)
+npm run build:win             # NSIS installer (run on Windows)
+```
+
+`.github/workflows/desktop.yml` builds both installers: static PHP via
+static-php-cli on Linux, php.net thread-safe zip on Windows.
 
 ## Module API (module/flareweber)
 

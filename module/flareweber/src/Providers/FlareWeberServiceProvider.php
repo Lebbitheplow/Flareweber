@@ -11,8 +11,8 @@ class FlareWeberServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
-        $this->mergeConfigFrom(__DIR__ . '/../config/flareweber.php', 'flareweber');
-        $this->loadMigrationsFrom(__DIR__ . '/../database/migrations');
+        $this->mergeConfigFrom(__DIR__ . '/../../config/flareweber.php', 'flareweber');
+        $this->loadMigrationsFrom(__DIR__ . '/../../database/migrations');
 
         $this->app->bind(DeploymentProviderInterface::class, \FlareWeber\Deploy\CloudflareWorkersProvider::class);
         $this->app->bind(PublishPipeline::class, function ($app) {
@@ -21,20 +21,25 @@ class FlareWeberServiceProvider extends ServiceProvider
                 $app->make(DeploymentProviderInterface::class)
             );
         });
+
+        $this->commands([
+            \FlareWeber\Console\ExportSitesCommand::class,
+            \FlareWeber\Console\ImportSitesCommand::class,
+        ]);
     }
 
     public function boot(): void
     {
-        $this->loadViewsFrom(__DIR__ . '/../resources/views', 'flareweber');
+        $this->loadViewsFrom(__DIR__ . '/../../resources/views', 'flareweber');
 
         Route::prefix('flareweber')
             ->name('flareweber.')
             ->middleware('web')
-            ->group(__DIR__ . '/../routes/web.php');
+            ->group(__DIR__ . '/../../routes/web.php');
 
         // Server-to-server callbacks: no session/CSRF middleware.
         Route::prefix('flareweber/webhooks')
             ->name('flareweber.webhooks.')
-            ->group(__DIR__ . '/../routes/webhooks.php');
+            ->group(__DIR__ . '/../../routes/webhooks.php');
     }
 }

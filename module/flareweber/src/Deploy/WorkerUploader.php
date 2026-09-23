@@ -16,11 +16,16 @@ use RuntimeException;
  *   1. POST .../scripts/{name}/assets-upload-session  -> {jwt, buckets}
  *   2. POST .../assets/upload?base64=true             -> completion jwt
  *   3. PUT  .../scripts/{name}                        -> create + deploy version
- *   4. POST .../scripts/{name}/subdomain {enabled}    -> serve on workers.dev
+ *   4. POST .../scripts/{name}/subdomain              -> serve on workers.dev
  */
 class WorkerUploader
 {
     private const MODULE_CONTENT_TYPE = 'application/javascript+module';
+
+    public const ASSETS_CONFIG = [
+        'html_handling' => 'auto-trailing-slash',
+        'not_found_handling' => '404-page',
+    ];
 
     public function __construct(
         private readonly CloudflareClient $client,
@@ -31,8 +36,8 @@ class WorkerUploader
     /**
      * Upload the worker module + assets and deploy immediately.
      *
-     * @param array<string, mixed> $metadata  base metadata (main_module, bindings, compatibility_date, ...)
-     * @return string the deployed version id
+     * @param array<string, mixed> $metadata  base metadata (bindings, compatibility_date, ...)
+     * @return string the deployed version id (result.deployment_id, else result.id)
      */
     public function deploy(string $workerName, string $modulePath, ?string $assetsDir, array $metadata): string
     {
@@ -43,13 +48,25 @@ class WorkerUploader
         $completionJwt = $this->uploadAssets($workerName, $assetsDir);
 
         if ($completionJwt !== null) {
-            $metadata['assets'] = array_merge($metadata['assets'] ?? [], ['jwt' => $completionJwt]);
+            $metadata['assets'] = [
+                'jwt' => $completionJwt,
+                'config' => array_merge(self::ASSETS_CONFIG, $metadata['assets']['config'] ?? []),
+            ];
         } else {
             unset($metadata['assets']);
+            // Without an assets upload the ASSETS binding cannot exist.
+            $metadata['bindings'] = array_values(array_filter(
+                $metadata['bindings'] ?? [],
+                static fn (array $b) => ($b['type'] ?? '') !== 'assets'
+            ));
         }
 
         $moduleName = basename($modulePath);
         $metadata['main_module'] = $moduleName;
+        $metadata['keep_bindings'] = array_values(array_unique(array_merge(
+            $metadata['keep_bindings'] ?? [],
+            ['secret_text', 'secret_key']
+        )));
 
         $response = $this->client->multipart(
             'put',
@@ -69,10 +86,17 @@ class WorkerUploader
             ]
         );
 
-        $versionId = $response['result'] ?? null;
+        $result = $response['result'] ?? [];
+        $versionId = null;
 
-        if (!is_string($versionId)) {
-            throw new RuntimeException('Worker upload did not return a version id: ' . json_encode($response));
+        if (is_array($result)) {
+            $versionId = $result['deployment_id'] ?? $result['id'] ?? null;
+        } elseif (is_string($result)) {
+            $versionId = $result;
+        }
+
+        if (!is_string($versionId) || $versionId === '') {
+            throw new RuntimeException('Worker upload did not return a version id.');
         }
 
         return $versionId;
@@ -104,17 +128,16 @@ class WorkerUploader
         $buckets = $result['buckets'] ?? [];
 
         if (!is_string($uploadJwt)) {
-            throw new RuntimeException('Asset upload session failed: ' . json_encode($session));
+            throw new RuntimeException('Asset upload session did not return an upload token.');
         }
 
         if ($buckets === []) {
-            return $uploadJwt;
+            return $uploadJwt; // everything already stored: the session jwt completes the upload
         }
 
-        // hash => absolute path
         $byHash = [];
         foreach ($manifest as $path => $entry) {
-            $byHash[$entry['hash']] = $assetsDir . $path;
+            $byHash[$entry['hash']] = rtrim($assetsDir, '/\\') . $path;
         }
 
         $completionJwt = $uploadJwt;
@@ -130,6 +153,7 @@ class WorkerUploader
                 $parts[] = [
                     'name' => $hash,
                     'contents' => base64_encode((string) file_get_contents($byHash[$hash])),
+                    'filename' => $hash,
                     'headers' => ['Content-Type' => $this->mime($byHash[$hash])],
                 ];
             }
@@ -138,7 +162,7 @@ class WorkerUploader
                 'post',
                 "/accounts/{$this->accountId}/workers/assets/upload",
                 $parts,
-                ['base64' => true],
+                ['base64' => 'true'],
                 $uploadJwt
             );
 
@@ -150,12 +174,39 @@ class WorkerUploader
         return $completionJwt;
     }
 
+    /** Serve the script on workers.dev (production URL; previews disabled). */
     public function enableSubdomain(string $workerName): void
     {
         $this->client->post(
             "/accounts/{$this->accountId}/workers/scripts/{$workerName}/subdomain",
-            ['enabled' => true]
+            ['enabled' => true, 'previews_enabled' => false]
         );
+    }
+
+    /**
+     * Set a Worker secret via PUT .../scripts/{name}/secrets
+     * with body {name, text, type: "secret_text"}. Empty values are refused.
+     */
+    public function putSecret(string $workerName, string $name, string $text): void
+    {
+        if ($text === '') {
+            throw new RuntimeException("Refusing to set empty worker secret {$name}.");
+        }
+
+        $response = $this->client->put(
+            "/accounts/{$this->accountId}/workers/scripts/{$workerName}/secrets",
+            ['name' => $name, 'text' => $text, 'type' => 'secret_text'],
+            throwOnError: false
+        );
+
+        if (!($response['success'] ?? false)) {
+            $errors = array_map(
+                static fn ($e) => is_array($e) ? ($e['message'] ?? 'unknown') : (string) $e,
+                $response['errors'] ?? ['no response']
+            );
+
+            throw new RuntimeException("Failed to set worker secret {$name}: " . implode('; ', $errors));
+        }
     }
 
     public function hasAssets(?string $assetsDir): bool
@@ -164,15 +215,8 @@ class WorkerUploader
             return false;
         }
 
-        $root = rtrim($assetsDir, '/\\') . '/';
-        $iterator = new RecursiveIteratorIterator(
-            new RecursiveDirectoryIterator($root, RecursiveDirectoryIterator::SKIP_DOTS)
-        );
-
-        foreach ($iterator as $file) {
-            if ($file->isFile()) {
-                return true;
-            }
+        foreach ($this->files($assetsDir) as $file) {
+            return true;
         }
 
         return false;
@@ -182,37 +226,42 @@ class WorkerUploader
      * Build the asset manifest: { "/path": {hash, size} }.
      *
      * The hash is sha256(base64(content) + extension), first 32 hex chars,
-     * matching the Cloudflare direct-upload contract. It is used only as a
-     * content-addressable key, so it must simply be deterministic per content.
+     * matching the Cloudflare direct-upload contract.
      *
      * @return array<string, array{hash: string, size: int}>
      */
     private function buildManifest(string $assetsDir): array
     {
         $manifest = [];
-
         $root = rtrim($assetsDir, '/\\') . '/';
-        $iterator = new RecursiveIteratorIterator(
-            new RecursiveDirectoryIterator($root, RecursiveDirectoryIterator::SKIP_DOTS)
-        );
 
-        foreach ($iterator as $file) {
-            if (!$file->isFile()) {
-                continue;
-            }
-
+        foreach ($this->files($assetsDir) as $file) {
             $contents = (string) file_get_contents($file->getPathname());
             $relative = '/' . str_replace('\\', '/', substr($file->getPathname(), strlen($root)));
             $extension = strtolower(pathinfo($relative, PATHINFO_EXTENSION));
-            $hash = substr(hash('sha256', base64_encode($contents) . $extension), 0, 32);
 
             $manifest[$relative] = [
-                'hash' => $hash,
+                'hash' => substr(hash('sha256', base64_encode($contents) . $extension), 0, 32),
                 'size' => strlen($contents),
             ];
         }
 
         return $manifest;
+    }
+
+    /** @return \Generator<int, \SplFileInfo> */
+    private function files(string $dir): \Generator
+    {
+        $root = rtrim($dir, '/\\') . '/';
+        $iterator = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator($root, RecursiveDirectoryIterator::SKIP_DOTS)
+        );
+
+        foreach ($iterator as $file) {
+            if ($file->isFile()) {
+                yield $file;
+            }
+        }
     }
 
     private function mime(string $path): string
@@ -237,7 +286,6 @@ class WorkerUploader
             'ttf' => 'font/ttf',
             'txt' => 'text/plain',
             'xml' => 'application/xml',
-            'robots' => 'text/plain',
         ];
 
         $ext = strtolower(pathinfo($path, PATHINFO_EXTENSION));

@@ -11,7 +11,7 @@ use Illuminate\Support\Facades\Route;
 Route::get('admin', [AdminController::class, 'index'])->name('admin');
 
 Route::get('cloudflare/connect', [CloudflareOAuthController::class, 'connect'])->name('cloudflare.connect');
-Route::get('cloudflare/callback', [CloudflareOAuthController::class, 'callback'])->name('cloudflare.callback');
+Route::post('cloudflare/token', [CloudflareOAuthController::class, 'connectWithToken'])->name('cloudflare.token');
 Route::get('cloudflare/accounts', [CloudflareOAuthController::class, 'accounts'])->name('cloudflare.accounts');
 Route::post('cloudflare/accounts/select', [CloudflareOAuthController::class, 'selectAccount'])->name('cloudflare.accounts.select');
 Route::get('cloudflare/status', [CloudflareOAuthController::class, 'status'])->name('cloudflare.status');
@@ -25,10 +25,13 @@ Route::match(['put', 'patch'], 'sites/{site}', [SiteController::class, 'update']
 Route::post('sites/{site}/publish', [PublishController::class, 'publish'])->name('sites.publish');
 Route::post('sites/{site}/preview', [PublishController::class, 'preview'])->name('sites.preview');
 Route::get('sites/{site}/deployments', [PublishController::class, 'deployments'])->name('sites.deployments');
+Route::get('sites/{site}/deployments/{deployment}', [PublishController::class, 'show'])->name('sites.deployments.show');
 Route::post('sites/{site}/deployments/{deployment}/rollback', [PublishController::class, 'rollback'])->name('sites.rollback');
 
 Route::post('sites/{site}/domain/check', [DomainController::class, 'check'])->name('sites.domain.check');
 Route::post('sites/{site}/domain/connect', [DomainController::class, 'connect'])->name('sites.domain.connect');
 
+Route::get('sites/{site}/stripe/status', [StripeConnectController::class, 'status'])->name('sites.stripe.status');
 Route::get('sites/{site}/stripe/connect', [StripeConnectController::class, 'connect'])->name('sites.stripe.connect');
-Route::get('sites/{site}/stripe/callback', [StripeConnectController::class, 'callback'])->name('sites.stripe.callback');
+Route::post('sites/{site}/stripe/key', [StripeConnectController::class, 'key'])->name('sites.stripe.key');
+Route::post('sites/{site}/stripe/disconnect', [StripeConnectController::class, 'disconnect'])->name('sites.stripe.disconnect');

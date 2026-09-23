@@ -4,11 +4,16 @@ namespace FlareWeber\Cloudflare;
 
 use FlareWeber\Models\CloudflareConnection;
 use Illuminate\Http\Client\PendingRequest;
+use Illuminate\Http\Client\Response;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use RuntimeException;
 
 class CloudflareClient
 {
+    /** Refresh OAuth tokens this many seconds before they actually expire. */
+    private const REFRESH_LEEWAY = 120;
+
     public function __construct(
         private readonly CloudflareConnection $connection,
         private readonly string $apiBase
@@ -17,7 +22,66 @@ class CloudflareClient
 
     public static function forConnection(CloudflareConnection $connection): self
     {
-        return new self($connection, config('flareweber.cloudflare.api_base'));
+        if ($connection->status === 'disconnected' || (string) $connection->access_token === '') {
+            throw new RuntimeException('Cloudflare connection is disconnected. Reconnect your account.');
+        }
+
+        // API tokens never expire on our side and cannot be refreshed.
+        if (!$connection->isTokenMethod() && $connection->expiresWithin(self::REFRESH_LEEWAY)) {
+            self::refreshWithLock($connection);
+        }
+
+        if ($connection->status !== 'connected') {
+            throw new RuntimeException('Cloudflare connection is not active (' . $connection->status . '). Reconnect your account.');
+        }
+
+        return new self($connection, (string) config('flareweber.cloudflare.api_base'));
+    }
+
+    /**
+     * Refresh the OAuth tokens under a cache lock so concurrent requests
+     * (web + detached deployment) do not race and burn the refresh token.
+     */
+    private static function refreshWithLock(CloudflareConnection $connection): void
+    {
+        $refresh = static function () use ($connection): void {
+            $connection->refresh();
+
+            if (!$connection->expiresWithin(self::REFRESH_LEEWAY)) {
+                return; // another process refreshed meanwhile
+            }
+
+            if (!$connection->refresh_token) {
+                $connection->status = 'expired';
+                $connection->save();
+
+                throw new RuntimeException('Cloudflare token expired. Reconnect your account.');
+            }
+
+            try {
+                app(OAuthService::class)->refreshConnection($connection);
+            } catch (\Throwable $e) {
+                $connection->status = 'expired';
+                $connection->save();
+
+                throw new RuntimeException('Cloudflare token expired. Reconnect your account.', 0, $e);
+            }
+        };
+
+        try {
+            $lock = Cache::lock('flareweber.cf_refresh.' . $connection->id, 30);
+            $lock->block(20, $refresh);
+        } catch (RuntimeException $e) {
+            throw $e;
+        } catch (\Throwable) {
+            // Cache store without lock support (or lock timeout): refresh anyway.
+            $refresh();
+        }
+    }
+
+    public function connection(): CloudflareConnection
+    {
+        return $this->connection;
     }
 
     public function get(string $path, array $query = [], bool $throwOnError = true): array
@@ -35,9 +99,27 @@ class CloudflareClient
         return $this->request('put', $path, ['json' => $body], $throwOnError);
     }
 
+    public function patch(string $path, array $body = [], bool $throwOnError = true): array
+    {
+        return $this->request('patch', $path, ['json' => $body], $throwOnError);
+    }
+
     public function delete(string $path, bool $throwOnError = true): array
     {
         return $this->request('delete', $path, [], $throwOnError);
+    }
+
+    /**
+     * Whether a GET on the path succeeds. Used for endpoints that do not
+     * return JSON (e.g. GET workers/scripts/{name} returns the script body).
+     */
+    public function exists(string $path): bool
+    {
+        try {
+            return $this->client()->get($this->apiBase . $path)->successful();
+        } catch (\Throwable) {
+            return false;
+        }
     }
 
     /**
@@ -54,11 +136,9 @@ class CloudflareClient
         ?string $bearerToken = null,
         bool $throwOnError = true
     ): array {
-        $request = $this->client(300);
-
-        if ($bearerToken !== null) {
-            $request = Http::withToken($bearerToken)->acceptJson()->timeout(300);
-        }
+        $request = $bearerToken !== null
+            ? Http::withToken($bearerToken)->acceptJson()->timeout(300)
+            : $this->client(300);
 
         foreach ($parts as $part) {
             $request = $request->attach(
@@ -74,25 +154,12 @@ class CloudflareClient
             $url .= (str_contains($url, '?') ? '&' : '?') . http_build_query($query);
         }
 
-        $response = $request->{$method}($url);
-        $payload = $response->json() ?? [];
-
-        if ($throwOnError && !$response->successful()) {
-            $errors = $payload['errors'] ?? [['message' => $response->status() . ' ' . $response->body()]];
-
-            throw new RuntimeException(
-                'Cloudflare API error on ' . strtoupper($method) . ' ' . $path . ': '
-                . json_encode($errors)
-            );
-        }
-
-        return $payload;
+        return $this->payload($request->{$method}($url), strtoupper($method), $path, $throwOnError);
     }
 
     /**
      * PUT a raw request body with an explicit Content-Type. Used for the R2
-     * object endpoint (PUT /accounts/{acct}/r2/buckets/{bucket}/objects/{key}),
-     * where the body is the object bytes rather than JSON.
+     * object endpoint, where the body is the object bytes rather than JSON.
      */
     public function putRaw(string $path, string $body, string $contentType, bool $throwOnError = true): array
     {
@@ -101,21 +168,12 @@ class CloudflareClient
             ->withBody($body, $contentType)
             ->put($this->apiBase . $path);
 
-        $payload = $response->json() ?? [];
-
-        if ($throwOnError && !$response->successful()) {
-            $errors = $payload['errors'] ?? [['message' => $response->status() . ' ' . $response->body()]];
-
-            throw new RuntimeException(
-                'Cloudflare API error on PUT ' . $path . ': ' . json_encode($errors)
-            );
-        }
-
-        return $payload;
+        return $this->payload($response, 'PUT', $path, $throwOnError);
     }
 
     /**
-     * List every object key in an R2 bucket (paginated).
+     * List every object key in an R2 bucket. The API returns `result[]`
+     * (objects with `key`) and `result_info.cursor` / `result_info.is_truncated`.
      *
      * @return array<int, string>
      */
@@ -125,25 +183,44 @@ class CloudflareClient
         $cursor = null;
 
         do {
-            $query = $cursor !== null ? ['cursor' => $cursor] : [];
-            $payload = $this->get("/accounts/{$accountId}/r2/buckets/{$bucket}/objects", $query);
-            $result = $payload['result'] ?? [];
+            $query = ['per_page' => 1000];
+            if ($cursor !== null) {
+                $query['cursor'] = $cursor;
+            }
 
-            foreach ($result['objects'] ?? [] as $object) {
-                if (isset($object['key'])) {
-                    $keys[] = $object['key'];
+            $payload = $this->get("/accounts/{$accountId}/r2/buckets/{$bucket}/objects", $query);
+
+            foreach ($payload['result'] ?? [] as $object) {
+                if (is_array($object) && isset($object['key'])) {
+                    $keys[] = (string) $object['key'];
                 }
             }
 
-            $cursor = !empty($result['truncated']) ? ($result['cursor'] ?? null) : null;
-        } while ($cursor);
+            $info = $payload['result_info'] ?? [];
+            $cursor = !empty($info['is_truncated']) && !empty($info['cursor']) ? (string) $info['cursor'] : null;
+        } while ($cursor !== null);
 
         return $keys;
     }
 
     public function accounts(): array
     {
-        return $this->get('/accounts')['result'] ?? [];
+        $accounts = [];
+        $page = 1;
+
+        do {
+            $payload = $this->get('/accounts', ['page' => $page, 'per_page' => 50]);
+            $result = $payload['result'] ?? [];
+            foreach ($result as $account) {
+                $accounts[] = $account;
+            }
+
+            $info = $payload['result_info'] ?? [];
+            $more = isset($info['total_pages']) && $page < (int) $info['total_pages'];
+            $page++;
+        } while ($more && $page <= 20);
+
+        return $accounts;
     }
 
     public function verifyToken(): bool
@@ -155,26 +232,45 @@ class CloudflareClient
 
     private function request(string $method, string $path, array $options = [], bool $throwOnError = true): array
     {
-        $pending = $this->client();
+        $response = $this->client()->{$method}($this->apiBase . $path, $options['json'] ?? $options['query'] ?? []);
 
-        $response = $pending->{$method}($this->apiBase . $path, $options['json'] ?? $options['query'] ?? []);
-        $payload = $response->json() ?? [];
+        return $this->payload($response, strtoupper($method), $path, $throwOnError);
+    }
 
-        if ($throwOnError && !$response->successful()) {
-            $errors = $payload['errors'] ?? [['message' => $response->status() . ' ' . $response->body()]];
+    private function payload(Response $response, string $method, string $path, bool $throwOnError): array
+    {
+        $payload = $response->json();
+        $payload = is_array($payload) ? $payload : [];
 
+        if ($throwOnError && (!$response->successful() || ($payload !== [] && ($payload['success'] ?? true) === false))) {
             throw new RuntimeException(
-                'Cloudflare API error on ' . strtoupper($method) . ' ' . $path . ': '
-                . json_encode($errors)
+                "Cloudflare API error on {$method} {$path}: " . $this->describeErrors($response, $payload)
             );
         }
 
         return $payload;
     }
 
+    private function describeErrors(Response $response, array $payload): string
+    {
+        $messages = [];
+
+        foreach ($payload['errors'] ?? [] as $error) {
+            if (is_array($error) && isset($error['message'])) {
+                $messages[] = (isset($error['code']) ? "[{$error['code']}] " : '') . $error['message'];
+            }
+        }
+
+        if ($messages === []) {
+            $messages[] = 'HTTP ' . $response->status();
+        }
+
+        return implode('; ', $messages);
+    }
+
     private function client(int $timeout = 30): PendingRequest
     {
-        return Http::withToken($this->connection->access_token)
+        return Http::withToken((string) $this->connection->access_token)
             ->acceptJson()
             ->timeout($timeout);
     }

@@ -18,13 +18,15 @@ class FlareWeberServiceProvider extends ServiceProvider
         $this->app->bind(PublishPipeline::class, function ($app) {
             return new PublishPipeline(
                 $app->make(\FlareWeber\Compiler\SiteCompiler::class),
-                $app->make(DeploymentProviderInterface::class)
+                $app->make(DeploymentProviderInterface::class),
+                $app->make(\FlareWeber\Deploy\PublishValidator::class)
             );
         });
 
         $this->commands([
             \FlareWeber\Console\ExportSitesCommand::class,
             \FlareWeber\Console\ImportSitesCommand::class,
+            \FlareWeber\Console\RunDeploymentCommand::class,
         ]);
     }
 
@@ -34,8 +36,24 @@ class FlareWeberServiceProvider extends ServiceProvider
 
         Route::prefix('flareweber')
             ->name('flareweber.')
-            ->middleware('web')
+            ->middleware(['web', \FlareWeber\Http\Middleware\EnsureAdminAuthenticated::class])
             ->group(__DIR__ . '/../../routes/web.php');
+
+        // OAuth round-trip: the callback lands from the system browser, which
+        // carries no admin session, so it is authenticated by its state token.
+        Route::prefix('flareweber')
+            ->name('flareweber.')
+            ->middleware('web')
+            ->group(__DIR__ . '/../../routes/oauth.php');
+
+        // JSON API consumed by the FlareWeber admin SPA (pages, products,
+        // media, orders, dashboard). Same auth gate as the web routes.
+        if (is_file(__DIR__ . '/../../routes/admin.php')) {
+            Route::prefix('flareweber/api')
+                ->name('flareweber.api.')
+                ->middleware(['web', \FlareWeber\Http\Middleware\EnsureAdminAuthenticated::class])
+                ->group(__DIR__ . '/../../routes/admin.php');
+        }
 
         // Server-to-server callbacks: no session/CSRF middleware.
         Route::prefix('flareweber/webhooks')

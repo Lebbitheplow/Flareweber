@@ -52,6 +52,36 @@ class WorkerBundler
     }
 
     /**
+     * Whether any file under the template's src/ (or its schema.sql) is newer
+     * than the given prebuilt bundle, meaning the bundle is stale.
+     */
+    public function sourceNewerThan(string $bundle): bool
+    {
+        if (!is_file($bundle)) {
+            return true;
+        }
+
+        $built = (int) filemtime($bundle);
+        $src = rtrim($this->templatePath, '/') . '/src';
+
+        if (!is_dir($src)) {
+            return false;
+        }
+
+        $iterator = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($src, \RecursiveDirectoryIterator::SKIP_DOTS)
+        );
+
+        foreach ($iterator as $file) {
+            if ($file->isFile() && (int) $file->getMTime() > $built) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Prefer the project-local esbuild binary, then a global one via npx.
      */
     private function esbuild(): string

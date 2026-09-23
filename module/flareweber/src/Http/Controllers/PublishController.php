@@ -2,50 +2,76 @@
 
 namespace FlareWeber\Http\Controllers;
 
+use FlareWeber\Deploy\DeploymentInProgressException;
+use FlareWeber\Deploy\DeploymentSpawner;
 use FlareWeber\Deploy\PublishPipeline;
 use FlareWeber\Models\Deployment;
 use FlareWeber\Models\Site;
-use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
 
+/**
+ * Async publish API (contract F): publish/preview/rollback create a running
+ * deployment, start `flareweber:run-deployment` detached and answer 202. If
+ * the process cannot be spawned the pipeline runs inline and answers 200.
+ */
 class PublishController extends Controller
 {
-    public function publish(Request $request, PublishPipeline $pipeline, Site $site)
+    public function publish(PublishPipeline $pipeline, DeploymentSpawner $spawner, Site $site)
     {
-        $deployment = $pipeline->publish($site, 'production');
-
-        return response()->json($this->present($deployment), $deployment->status === 'success' ? 200 : 502);
+        return $this->start($pipeline, $spawner, fn () => $pipeline->publish($site, 'production'));
     }
 
-    public function preview(PublishPipeline $pipeline, Site $site)
+    public function preview(PublishPipeline $pipeline, DeploymentSpawner $spawner, Site $site)
     {
-        if (!$site->preview_worker_name) {
-            $site->forceFill([
-                'preview_worker_name' => ($site->worker_name ?: 'flareweber-' . $site->id) . '--preview',
-            ])->save();
-        }
-
-        $deployment = $pipeline->publish($site, 'preview');
-
-        return response()->json($this->present($deployment), $deployment->status === 'success' ? 200 : 502);
+        return $this->start($pipeline, $spawner, fn () => $pipeline->publish($site, 'preview'));
     }
 
     public function deployments(Site $site)
     {
         return response()->json(
-            $site->deployments()->latest('version')->get()
+            $site->deployments()->orderByDesc('id')->limit(50)->get()
                 ->map(fn (Deployment $d) => $this->present($d))
         );
     }
 
-    public function rollback(Request $request, PublishPipeline $pipeline, Site $site, Deployment $deployment)
+    public function show(Site $site, Deployment $deployment)
     {
         abort_unless($deployment->site_id === $site->id, 404);
-        abort_unless($deployment->status === 'success', 422);
 
-        $result = $pipeline->rollback($site, $deployment);
+        return response()->json($this->present($deployment));
+    }
 
-        return response()->json($this->present($result), $result->status === 'success' ? 200 : 502);
+    public function rollback(PublishPipeline $pipeline, DeploymentSpawner $spawner, Site $site, Deployment $deployment)
+    {
+        abort_unless($deployment->site_id === $site->id, 404);
+
+        if ($deployment->status !== 'success' || !$deployment->worker_version_id) {
+            return response()->json(['error' => 'not_rollbackable'], 422);
+        }
+
+        return $this->start($pipeline, $spawner, fn () => $pipeline->rollback($site, $deployment));
+    }
+
+    /** @param callable(): Deployment $create */
+    private function start(PublishPipeline $pipeline, DeploymentSpawner $spawner, callable $create)
+    {
+        try {
+            $deployment = $create();
+        } catch (DeploymentInProgressException $e) {
+            return response()->json([
+                'error' => 'deployment_in_progress',
+                'deployment' => $this->present($e->running),
+            ], 409);
+        }
+
+        if ($spawner->spawn($deployment)) {
+            return response()->json($this->present($deployment), 202);
+        }
+
+        $deployment->appendLog('Background runner unavailable; running inline.');
+        $deployment = $pipeline->run($deployment);
+
+        return response()->json($this->present($deployment), 200);
     }
 
     private function present(Deployment $deployment): array
@@ -57,7 +83,11 @@ class PublishController extends Controller
             'status' => $deployment->status,
             'url' => $deployment->url,
             'worker_version_id' => $deployment->worker_version_id,
+            'rollback_to' => $deployment->rollback_to,
             'log' => $deployment->log,
+            'steps' => $deployment->stepList(),
+            'created_at' => $deployment->created_at?->toIso8601String(),
+            'finished_at' => $deployment->finished_at?->toIso8601String(),
         ];
     }
 }

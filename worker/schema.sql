@@ -1,3 +1,13 @@
+-- Baseline schema. Applied with CREATE TABLE IF NOT EXISTS so it is safe on
+-- existing databases. Columns added after the baseline live in
+-- migrations/NNNN_*.sql, which the PHP seeder applies in order (once each,
+-- recorded in schema_migrations) right after this file and before seed.sql.
+
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  name TEXT PRIMARY KEY,
+  applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS categories (
   id INTEGER PRIMARY KEY,
   slug TEXT NOT NULL UNIQUE,
@@ -12,6 +22,12 @@ CREATE TABLE IF NOT EXISTS products (
   description TEXT,
   image TEXT,
   published INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS product_categories (
+  product_id INTEGER NOT NULL REFERENCES products(id),
+  category_id INTEGER NOT NULL REFERENCES categories(id),
+  PRIMARY KEY (product_id, category_id)
 );
 
 CREATE TABLE IF NOT EXISTS product_variants (
@@ -92,6 +108,19 @@ CREATE TABLE IF NOT EXISTS form_entries (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_products_published ON products(published);
+CREATE TABLE IF NOT EXISTS webhook_events (
+  id TEXT PRIMARY KEY,
+  type TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS rate_limits (
+  key TEXT PRIMARY KEY,
+  count INTEGER NOT NULL DEFAULT 0,
+  window_start INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_variants_product ON product_variants(product_id);
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
+CREATE INDEX IF NOT EXISTS idx_orders_session ON orders(stripe_session_id);
+CREATE INDEX IF NOT EXISTS idx_product_categories_category ON product_categories(category_id);

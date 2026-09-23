@@ -5,9 +5,11 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "bundle": "npx --yes esbuild@0.25 src/index.ts --bundle --format=esm --platform=neutral --outfile=dist/worker.mjs --minify",
-    "typecheck": "tsc --noEmit",
-    "db:migrate:local": "wrangler d1 execute site-db --local --file=./schema.sql"
+    "build": "esbuild src/index.ts --bundle --format=esm --platform=neutral --outfile=dist/worker.mjs --minify",
+    "bundle": "npm run build",
+    "typecheck": "tsc --noEmit -p .",
+    "test": "esbuild tests/entry.ts --bundle --format=esm --platform=neutral --outfile=node_modules/.cache/fw-tests/entry.mjs --log-level=warning && node --test tests/*.test.mjs",
+    "db:migrate:local": "wrangler d1 execute flareweber-site-db --local --file=./schema.sql && for f in migrations/*.sql; do wrangler d1 execute flareweber-site-db --local --file=$f; done"
   },
   "dependencies": {
     "hono": "^4.6.0"

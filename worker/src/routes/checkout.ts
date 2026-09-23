@@ -1,65 +1,115 @@
 import { Hono } from 'hono'
-import type { Env, Variant } from '../types'
+import type { Env } from '../types'
 import { getCartId } from '../lib/session'
-import { createCheckoutSession } from '../lib/stripe'
+import { createCheckoutSession, StripeApiError } from '../lib/stripe'
+import { orderToken, sha256Hex } from '../lib/crypto'
+import { readJsonObject, requireCartSecret, requireDb } from '../lib/http'
+import { normalizeEmail } from '../lib/validate'
+import { loadCart } from './cart'
 
 const checkout = new Hono<Env>()
 
+function absoluteImage(siteUrl: string, image: string | null): string[] {
+  if (!image) return []
+  if (/^https?:\/\//i.test(image)) return [image]
+  if (image.startsWith('/')) return [`${siteUrl}${image}`]
+  return []
+}
+
+/**
+ * Contract C: create the Stripe Checkout Session first, then insert the order
+ * and its items in one D1 batch keyed by stripe_session_id. The order token is
+ * HMAC(CART_SECRET, order_id + session_id) and is returned to the caller.
+ */
 checkout.post('/', async (c) => {
-  if (!c.env.DB) return c.json({ error: 'database_not_configured' }, 503)
+  const db = requireDb(c)
+  if (db instanceof Response) return db
+  const secret = requireCartSecret(c)
+  if (secret instanceof Response) return secret
   if (!c.env.STRIPE_SECRET_KEY) return c.json({ error: 'stripe_not_configured' }, 503)
+  const siteUrl = (c.env.SITE_URL ?? '').replace(/\/+$/, '')
+  if (!/^https?:\/\//.test(siteUrl)) return c.json({ error: 'site_url_not_configured' }, 503)
 
-  const body = await c.req.json<{ email?: string }>().catch(() => ({} as { email?: string }))
-  const { id: cartId } = await getCartId(c)
+  const body = await readJsonObject(c)
+  if (!body) return c.json({ error: 'invalid_json' }, 400)
 
-  const { results } = await c.env.DB
-    .prepare(`SELECT v.id, v.title, v.price_cents, v.currency, ci.quantity
-              FROM cart_items ci
-              JOIN product_variants v ON v.id = ci.variant_id
-              WHERE ci.cart_id = ?1`)
-    .bind(cartId)
-    .all<Variant & { quantity: number }>()
+  let email: string | null = null
+  if (body.email !== undefined && body.email !== null && body.email !== '') {
+    email = normalizeEmail(body.email)
+    if (!email) return c.json({ error: 'invalid_email' }, 400)
+  }
 
-  if (!results.length) return c.json({ error: 'cart_empty' }, 400)
+  const { id: cartId } = await getCartId(c, secret)
+  const items = await loadCart(db, cartId)
+  if (items.length === 0) return c.json({ error: 'cart_empty' }, 400)
 
-  const total = results.reduce((sum, r) => sum + r.price_cents * r.quantity, 0)
-  const currency = results[0].currency
+  const currency = items[0].currency
+  if (items.some((i) => i.currency !== currency)) return c.json({ error: 'currency_mismatch' }, 409)
 
-  const order = await c.env.DB
-    .prepare('INSERT INTO orders (email, status, total_cents, currency) VALUES (?1, ?2, ?3, ?4)')
-    .bind(body.email ?? null, 'pending', total, currency)
-    .run()
+  const short = items.find((i) => i.quantity_available !== -1 && i.quantity_in_cart > i.quantity_available)
+  if (short) {
+    return c.json(
+      { error: 'insufficient_stock', variant_id: short.id, available: Math.max(short.quantity_available, 0) },
+      409
+    )
+  }
 
-  const orderId = Number(order.meta.last_row_id)
+  const total = items.reduce((sum, i) => sum + i.price_cents * i.quantity_in_cart, 0)
+  const fingerprint = await sha256Hex(
+    JSON.stringify([cartId, email, items.map((i) => [i.id, i.quantity_in_cart, i.price_cents])])
+  )
 
-  await c.env.DB.batch(results.map((r) =>
-    c.env.DB!.prepare(
-      'INSERT INTO order_items (order_id, variant_id, quantity, unit_price_cents) VALUES (?1, ?2, ?3, ?4)'
-    ).bind(orderId, r.id, r.quantity, r.price_cents)
-  ))
+  let session: { id: string; url: string | null }
+  try {
+    session = await createCheckoutSession(c.env.STRIPE_SECRET_KEY, {
+      items: items.map((i) => ({
+        name: i.title && i.title !== 'Default' ? `${i.product_title} / ${i.title}` : i.product_title,
+        images: absoluteImage(siteUrl, i.image),
+        currency: i.currency,
+        unitAmount: i.price_cents,
+        quantity: i.quantity_in_cart,
+      })),
+      successUrl: `${siteUrl}/thank-you/?session_id={CHECKOUT_SESSION_ID}`,
+      cancelUrl: `${siteUrl}/`,
+      clientReferenceId: cartId,
+      customerEmail: email,
+      metadata: { cart_id: cartId, site: c.env.SITE_NAME ?? '' },
+      idempotencyKey: `fw-checkout-${fingerprint.slice(0, 48)}`,
+    })
+  } catch (error) {
+    const message = error instanceof StripeApiError ? `${error.status} ${error.message}` : String(error)
+    console.error('stripe checkout session failed:', message)
+    return c.json({ error: 'stripe_error' }, 502)
+  }
 
-  const session = await createCheckoutSession(c.env.STRIPE_SECRET_KEY, {
-    items: results.map((r) => ({
-      price_data: {
-        currency: r.currency.toLowerCase(),
-        product_data: { name: r.title ?? `Variant ${r.id}` },
-        unit_amount: r.price_cents,
-      },
-      quantity: r.quantity,
-    })),
-    successUrl: `${c.req.url.replace(/\/api\/checkout$/, '')}/thanks?order=${orderId}`,
-    cancelUrl: `${c.req.url.replace(/\/api\/checkout$/, '')}/cart`,
-    clientReferenceId: String(orderId),
-    currency,
-    customerEmail: body.email,
-  })
+  // Stripe idempotency can hand back the same session for a repeated request.
+  const existing = await db
+    .prepare('SELECT id, order_token FROM orders WHERE stripe_session_id = ?1')
+    .bind(session.id)
+    .first<{ id: number; order_token: string | null }>()
+  if (existing) {
+    const token = existing.order_token ?? (await orderToken(secret, existing.id, session.id))
+    return c.json({ checkout_url: session.url, order_id: existing.id, order_token: token })
+  }
 
-  await c.env.DB
-    .prepare('UPDATE orders SET stripe_session_id = ?1 WHERE id = ?2')
-    .bind(session.id, orderId)
-    .run()
+  const statements = [
+    db
+      .prepare(`INSERT INTO orders (email, status, payment_status, total_cents, currency, stripe_session_id, cart_id)
+                VALUES (?1, 'pending', 'unpaid', ?2, ?3, ?4, ?5)`)
+      .bind(email, total, currency, session.id, cartId),
+    ...items.map((i) =>
+      db
+        .prepare(`INSERT INTO order_items (order_id, variant_id, quantity, unit_price_cents)
+                  SELECT id, ?2, ?3, ?4 FROM orders WHERE stripe_session_id = ?1`)
+        .bind(session.id, i.id, i.quantity_in_cart, i.price_cents)
+    ),
+  ]
+  const results = await db.batch(statements)
+  const orderId = Number(results[0].meta.last_row_id)
+  const token = await orderToken(secret, orderId, session.id)
+  await db.prepare('UPDATE orders SET order_token = ?2 WHERE id = ?1').bind(orderId, token).run()
 
-  return c.json({ order_id: orderId, checkout_url: session.url })
+  return c.json({ checkout_url: session.url, order_id: orderId, order_token: token })
 })
 
 export default checkout

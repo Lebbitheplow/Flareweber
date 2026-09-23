@@ -1,24 +1,32 @@
-export type Env = {
-  Bindings: {
-    ASSETS: Fetcher
-    DB?: D1Database
-    MEDIA?: R2Bucket
-    SITE_ID: string
-    SITE_DOMAIN: string
-    CART_SECRET?: string
-    STRIPE_SECRET_KEY?: string
-    STRIPE_WEBHOOK_SECRET?: string
-  }
+export type Bindings = {
+  ASSETS: Fetcher
+  DB?: D1Database
+  MEDIA?: R2Bucket
+  SITE_URL: string
+  SITE_NAME: string
+  SITE_DOMAIN: string
+  CURRENCY: string
+  FEATURES: string
+  CART_SECRET?: string
+  STRIPE_SECRET_KEY?: string
+  STRIPE_WEBHOOK_SECRET?: string
 }
 
-export type Product = {
+export type Env = { Bindings: Bindings }
+
+export type ProductRow = {
   id: number
   slug: string
   title: string
   description: string | null
+  price_cents: number
+  currency: string
+  sku: string | null
   image: string | null
-  published: number
+  images_json: string | null
 }
+
+export type Category = { id: number; name: string; slug: string }
 
 export type Variant = {
   id: number
@@ -27,7 +35,13 @@ export type Variant = {
   title: string | null
   price_cents: number
   currency: string
-  quantity?: number
+  quantity: number
 }
 
-export type CartItem = Variant & { quantity_in_cart: number }
+export type CartItem = Variant & {
+  product_title: string
+  slug: string
+  image: string | null
+  quantity_in_cart: number
+  quantity_available: number
+}

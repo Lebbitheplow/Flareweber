@@ -2,9 +2,13 @@
   "name": "flareweber-site",
   "main": "src/index.ts",
   "compatibility_date": "2025-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
   "assets": {
     "directory": "./assets",
-    "binding": "ASSETS"
+    "binding": "ASSETS",
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "404-page"
   },
   "d1_databases": [
     {
@@ -20,7 +24,10 @@
     }
   ],
   "vars": {
-    "SITE_ID": "local",
-    "SITE_DOMAIN": ""
+    "SITE_NAME": "FlareWeber local",
+    "SITE_URL": "http://localhost:8787",
+    "SITE_DOMAIN": "",
+    "CURRENCY": "USD",
+    "FEATURES": "{\"ecommerce\":true,\"forms\":true}"
   }
 }

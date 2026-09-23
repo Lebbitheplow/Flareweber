@@ -5,22 +5,34 @@ namespace FlareWeber\Migration;
 use FlareWeber\Models\Site;
 
 /**
- * Produces a portable, secret-free JSON bundle of FlareWeber site configuration
- * and deployment history, so a site can be moved between FlareWeber installs
- * (e.g. desktop -> self-hosted server). Cloudflare OAuth tokens are never
- * included; the importer recreates connections as "disconnected" to be re-linked.
+ * Produces a portable, secret-free bundle of FlareWeber sites: site rows,
+ * deployment history, Microweber content (pages, posts, products with
+ * content_data, custom fields, categories) and, when written as a .zip,
+ * the media library. Cloudflare tokens, Stripe keys, media manifests and
+ * per-account resource ids (D1, R2, worker names) are never included: they
+ * belong to the old account and are recreated on the next publish.
  */
 class SitesExporter
 {
     public const FORMAT = 'flareweber-site-bundle';
 
-    public const VERSION = 1;
+    public const VERSION = 2;
+
+    private const STRIPPED_SETTINGS = [
+        'r2_media_manifest', 'd1_database_id', 'zone_id', 'workers_dev_url', 'stripe_account_id', 'stripe_method',
+    ];
+
+    public function __construct(
+        private readonly ContentExporter $content = new ContentExporter(),
+        private readonly BundleArchive $archive = new BundleArchive()
+    ) {
+    }
 
     /**
-     * @param  iterable<Site>  $sites
+     * @param iterable<Site> $sites
      * @return array<string, mixed>
      */
-    public function bundle(iterable $sites): array
+    public function bundle(iterable $sites, bool $includeContent = true): array
     {
         $exported = [];
         $connections = [];
@@ -29,7 +41,6 @@ class SitesExporter
             $exported[] = $this->site($site);
 
             $connection = $site->cloudflareConnection;
-
             if ($connection !== null && $connection->account_id !== '') {
                 $connections[$connection->account_id] = [
                     'account_id' => $connection->account_id,
@@ -38,13 +49,32 @@ class SitesExporter
             }
         }
 
-        return [
+        $bundle = [
             'format' => self::FORMAT,
             'version' => self::VERSION,
             'exported_at' => now()->format(\DateTimeInterface::ATOM),
             'connections' => array_values($connections),
             'sites' => $exported,
         ];
+
+        if ($includeContent) {
+            $bundle['content'] = $this->content->export();
+        }
+
+        return $bundle;
+    }
+
+    /**
+     * Write the bundle as a .zip with site.json and media/ (userfiles/media).
+     *
+     * @param array<string, mixed> $bundle
+     * @return int media files added
+     */
+    public function writeZip(string $path, array $bundle, bool $includeMedia = true): int
+    {
+        $mediaDir = $includeMedia ? rtrim(base_path(), '/') . '/userfiles/media' : null;
+
+        return $this->archive->write($path, $bundle, $mediaDir);
     }
 
     /**
@@ -55,14 +85,10 @@ class SitesExporter
         return [
             'name' => $site->name,
             'domain' => $site->domain,
-            'worker_name' => $site->worker_name,
-            'preview_worker_name' => $site->preview_worker_name,
-            'd1_database_name' => $site->d1_database_name,
-            'r2_bucket_name' => $site->r2_bucket_name,
             'cloudflare_account_id' => $site->cloudflareConnection?->account_id,
             'settings' => $this->safeSettings($site->settings ?? []),
             'published_at' => $site->published_at?->format(\DateTimeInterface::ATOM),
-            'deployments' => $site->deployments()->get()
+            'deployments' => $site->deployments()->orderBy('id')->get()
                 ->map(fn ($d) => [
                     'version' => $d->version,
                     'environment' => $d->environment,
@@ -71,6 +97,7 @@ class SitesExporter
                     'worker_version_id' => $d->worker_version_id,
                     'url' => $d->url,
                     'created_at' => $d->created_at?->format(\DateTimeInterface::ATOM),
+                    'finished_at' => $d->finished_at?->format(\DateTimeInterface::ATOM),
                 ])
                 ->values()
                 ->all(),
@@ -78,15 +105,19 @@ class SitesExporter
     }
 
     /**
-     * Strip anything that looks like a secret before it leaves the install.
+     * Strip secrets and account-bound resource identifiers before the
+     * settings leave the install.
      *
-     * @param  array<string, mixed>  $settings
+     * @param array<string, mixed> $settings
      * @return array<string, mixed>
      */
-    private function safeSettings(array $settings): array
+    public function safeSettings(array $settings): array
     {
         foreach ($settings as $key => $value) {
-            if (is_string($key) && preg_match('/secret|token|password|private/i', $key)) {
+            if (!is_string($key)) {
+                continue;
+            }
+            if (in_array($key, self::STRIPPED_SETTINGS, true) || preg_match('/secret|token|password|private|manifest/i', $key)) {
                 unset($settings[$key]);
             }
         }

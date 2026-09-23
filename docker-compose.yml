@@ -6,27 +6,18 @@ services:
     ports:
       - "8080:80"
     env_file:
-      - .env
+      - path: .env
+        required: false
+    environment:
+      # Absolute inside the container; the relative default only works from
+      # the repo root, not from app/.
+      WORKER_TEMPLATE_PATH: /var/www/flareweber/worker
     volumes:
       - ./app:/var/www/flareweber/app
       - ./module:/var/www/flareweber/module
     depends_on:
       mysql:
         condition: service_healthy
-
-  queue:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile
-    command: ["php", "artisan", "queue:work", "--tries=3", "--sleep=3"]
-    env_file:
-      - .env
-    volumes:
-      - ./app:/var/www/flareweber/app
-      - ./module:/var/www/flareweber/module
-    depends_on:
-      app:
-        condition: service_started
 
   mysql:
     image: mariadb:11
@@ -38,7 +29,7 @@ services:
     volumes:
       - mysql-data:/var/lib/mysql
     healthcheck:
-      test: ["healthcheck.sh", "--connect", "--innodb_initialized"]
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
       interval: 5s
       timeout: 5s
       retries: 20

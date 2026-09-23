@@ -5,15 +5,23 @@ on:
   push:
     tags: ['v*']
 
+env:
+  # Microweber 2.0.20 requires ext-intl and ext-sodium (composer.json); the
+  # rest is what Laravel, the media library and the FlareWeber compiler use.
+  PHP_EXTENSIONS: bcmath,bz2,ctype,curl,dom,exif,fileinfo,gd,iconv,intl,mbstring,openssl,pdo,pdo_sqlite,session,simplexml,sodium,sqlite3,tokenizer,xml,xmlwriter,zip,zlib
+
 jobs:
   desktop:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-22.04
             target: --linux
           - os: windows-latest
             target: --win
+          - os: macos-latest
+            target: --mac
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -25,47 +33,76 @@ jobs:
       - uses: shivammathur/setup-php@v2
         with:
           php-version: '8.3'
+          extensions: intl, sodium, gd, zip, bcmath, mbstring, curl
           tools: composer
           coverage: none
 
-      - name: Bundle Microweber app + FlareWeber module
-        run: node desktop/scripts/prepare-app.mjs
+      - name: Desktop unit tests
+        run: node --test "tests/**/*.test.js"
         working-directory: desktop
 
-      - name: Install static-php-cli (Linux bundling)
-        if: runner.os == 'Linux'
+      - name: Bundle Microweber app + FlareWeber module + Worker
+        run: node scripts/prepare-app.mjs
+        working-directory: desktop
+
+      - name: Build static PHP CLI (Linux / macOS)
+        if: runner.os != 'Windows'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential autoconf automake libtool cmake pkg-config libtool-bin patchelf
+          set -euo pipefail
           git clone --depth 1 https://github.com/crazywhalecc/static-php-cli.git /tmp/static-php-cli
           cd /tmp/static-php-cli
-          composer install --no-dev -a
-
-      - name: Build static PHP CLI (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          cd /tmp/static-php-cli
-          bin/spc download --with-libs="bcmath,bz2,ctype,curl,dom,exif,fileinfo,gd,iconv,intl,mbstring,openssl,pdo,pdo_sqlite,session,simplexml,sqlite3,tokenizer,xml,xmlwriter,zip,zlib" --ignore-cache-sources=php-src --no-zts
-          bin/spc build "bcmath,bz2,ctype,curl,dom,exif,fileinfo,gd,iconv,intl,mbstring,openssl,pdo,pdo_sqlite,session,simplexml,sqlite3,tokenizer,xml,xmlwriter,zip,zlib" --build-cli
-          mkdir -p desktop/resources/php
-          cp build-root/bin/php desktop/resources/php/php
-          chmod +x desktop/resources/php/php
-          desktop/resources/php/php -v
+          composer install --no-dev -a --no-interaction
+          bin/spc doctor --auto-fix
+          bin/spc download --with-php=8.3 --for-extensions="$PHP_EXTENSIONS" --prefer-pre-built
+          bin/spc build "$PHP_EXTENSIONS" --build-cli
+          mkdir -p "$GITHUB_WORKSPACE/desktop/resources/php"
+          cp buildroot/bin/php "$GITHUB_WORKSPACE/desktop/resources/php/php"
+          chmod +x "$GITHUB_WORKSPACE/desktop/resources/php/php"
+          "$GITHUB_WORKSPACE/desktop/resources/php/php" -v
 
       - name: Fetch PHP runtime (Windows)
         if: runner.os == 'Windows'
         run: node scripts/fetch-runtime.mjs
         working-directory: desktop
 
+      - name: Verify bundled payload
+        shell: bash
+        working-directory: desktop
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            PHP_BIN=resources/php/php.exe
+            PHP_ARGS=(-c resources/php/php.ini)
+          else
+            PHP_BIN=resources/php/php
+            PHP_ARGS=()
+          fi
+          for f in "$PHP_BIN" resources/microweber/artisan resources/worker/dist/worker.mjs; do
+            if [ ! -f "$f" ]; then
+              echo "::error::bundled payload is missing $f"
+              exit 1
+            fi
+          done
+          "$PHP_BIN" "${PHP_ARGS[@]}" -r 'foreach (["intl","sodium","pdo_sqlite","gd","zip","mbstring","curl","openssl"] as $e) { if (!extension_loaded($e)) { fwrite(STDERR, "missing ext $e\n"); exit(1); } } echo "PHP ", PHP_VERSION, " ok\n";'
+          grep -q '^2\.0\.20$' resources/microweber/version.txt
+
       - name: Install desktop deps
-        run: npm install
+        run: npm ci
         working-directory: desktop
 
       - name: Build installers
         run: npm run build -- ${{ matrix.target }}
         working-directory: desktop
+        env:
+          # Unsigned builds; add signing secrets before enabling notarisation.
+          CSC_IDENTITY_AUTO_DISCOVERY: false
 
       - uses: actions/upload-artifact@v4
         with:
           name: flareweber-desktop-${{ matrix.os }}
-          path: desktop/dist/*
+          path: |
+            desktop/dist/*.AppImage
+            desktop/dist/*.deb
+            desktop/dist/*.exe
+            desktop/dist/*.dmg
+          if-no-files-found: error

@@ -3,3 +3,4 @@ dist/
 .dev/
 resources/php/
 resources/microweber/
+resources/worker/

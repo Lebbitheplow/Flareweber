@@ -10,11 +10,13 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron . --dev",
+    "test": "node --test \"tests/**/*.test.js\"",
     "fetch:runtime": "node scripts/fetch-runtime.mjs",
     "prepare:app": "node scripts/prepare-app.mjs",
     "build": "electron-builder",
     "build:win": "electron-builder --win",
     "build:linux": "electron-builder --linux",
+    "build:mac": "electron-builder --mac",
     "postinstall": "electron-builder install-app-deps"
   },
   "devDependencies": {
@@ -41,6 +43,10 @@
       {
         "from": "resources/worker",
         "to": "worker"
+      },
+      {
+        "from": "src/router.php",
+        "to": "router.php"
       }
     ],
     "linux": {
@@ -60,6 +66,20 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true
-    }
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.developer-tools"
+    },
+    "protocols": [
+      {
+        "name": "FlareWeber URL",
+        "schemes": [
+          "flareweber"
+        ]
+      }
+    ]
   }
 }

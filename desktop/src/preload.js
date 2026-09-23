@@ -10,4 +10,11 @@ contextBridge.exposeInMainWorld('flareweber', {
     return () => ipcRenderer.removeListener('flareweber:status', listener);
   },
   credentialsFile: () => ipcRenderer.invoke('flareweber:credentials-file'),
+  stripeRedirectUri: () => ipcRenderer.invoke('flareweber:stripe-redirect-uri'),
+  // Emitted when the OS hands back an OAuth callback (flareweber://...).
+  onOauthLink: (callback) => {
+    const listener = (_event, url) => callback(url);
+    ipcRenderer.on('flareweber:oauth-link', listener);
+    return () => ipcRenderer.removeListener('flareweber:oauth-link', listener);
+  },
 });

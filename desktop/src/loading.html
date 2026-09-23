@@ -39,6 +39,15 @@
         max-width: 420px;
         text-align: center;
       }
+      .notice {
+        color: #f68b1f;
+        font-size: 13px;
+        max-width: 420px;
+        text-align: center;
+      }
+      .notice:empty {
+        display: none;
+      }
       .spinner {
         width: 28px;
         height: 28px;
@@ -59,15 +68,17 @@
       <div class="spinner"></div>
       <div class="logo">Flare<span>Weber</span></div>
       <div class="status" id="status">Starting the bundled site...</div>
+      <div class="notice" id="notice"></div>
     </div>
     <script>
       const el = document.getElementById('status');
-      window.flareweber.getStatus().then((s) => {
+      const noticeEl = document.getElementById('notice');
+      const render = (s) => {
         if (s.message) el.textContent = s.message;
-      });
-      window.flareweber.onStatus((s) => {
-        if (s.message) el.textContent = s.message;
-      });
+        noticeEl.textContent = s.notice || '';
+      };
+      window.flareweber.getStatus().then(render);
+      window.flareweber.onStatus(render);
     </script>
   </body>
 </html>

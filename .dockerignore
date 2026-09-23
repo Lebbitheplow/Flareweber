@@ -1,0 +1,13 @@
+.git
+.github
+.env
+node_modules
+**/node_modules
+worker/dist
+worker/.wrangler
+/app
+/desktop/resources
+desktop/dist
+build
+*.log
+.DS_Store
